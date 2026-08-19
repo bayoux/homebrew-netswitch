@@ -16,13 +16,13 @@
 ### Через Homebrew (рекомендуется)
 
 ```bash
-brew install https://github.com/bayoux/netswitch
+brew install bayoux/netswitch/netswitch
 ```
 
 ### Вручную (curl)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ВАШ_GITHUB/netswitch/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bayoux/homebrew-netswitch/main/install.sh | bash
 ```
 
 ### Из исходников
