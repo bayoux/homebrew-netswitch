@@ -17,19 +17,23 @@
 
 set -euo pipefail
 
-VERSION="0.1.2"
+VERSION="0.1.3"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/netswitch"
 CONFIG_FILE="$CONFIG_DIR/config"
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
-  _C_GREEN=$'\033[32m'; _C_RED=$'\033[31m'; _C_DIM=$'\033[2m'; _C_RESET=$'\033[0m'
+  _C_GREEN=$'\033[32m'; _C_RED=$'\033[31m'; _C_YELLOW=$'\033[33m'
+  _C_DIM=$'\033[2m'; _C_BOLD=$'\033[1m'; _C_RESET=$'\033[0m'
 else
-  _C_GREEN=""; _C_RED=""; _C_DIM=""; _C_RESET=""
+  _C_GREEN=""; _C_RED=""; _C_YELLOW=""; _C_DIM=""; _C_BOLD=""; _C_RESET=""
 fi
 
-_green() { printf '%s%s%s' "$_C_GREEN" "$1" "$_C_RESET"; }
-_red()   { printf '%s%s%s' "$_C_RED" "$1" "$_C_RESET"; }
+_green()  { printf '%s%s%s' "$_C_GREEN" "$1" "$_C_RESET"; }
+_red()    { printf '%s%s%s' "$_C_RED" "$1" "$_C_RESET"; }
+_yellow() { printf '%s%s%s' "$_C_YELLOW" "$1" "$_C_RESET"; }
+_dim()    { printf '%s%s%s' "$_C_DIM" "$1" "$_C_RESET"; }
+_bold()   { printf '%s%s%s' "$_C_BOLD" "$1" "$_C_RESET"; }
 
 # ─────────────────────────────────────────────────────────────
 #  Детекторы путей
@@ -97,22 +101,22 @@ _suggest_services() {
 
 cmd_init() {
   local squid conf
-  echo "Поиск путей…"
+  echo "$(_dim "Поиск путей…")"
 
   if ! squid="$(_detect_squid)"; then
-    echo "✗ Бинарник squid не найден автоматически."
+    echo "$(_red "✗") Бинарник squid не найден автоматически."
     printf "  Укажи путь вручную: "; read -r squid
-    [[ -x "$squid" ]] || { echo "✗ Файл не исполняемый: $squid"; return 1; }
+    [[ -x "$squid" ]] || { echo "$(_red "✗") Файл не исполняемый: $squid"; return 1; }
   fi
 
   if ! conf="$(_detect_conf)"; then
-    echo "✗ squid.conf не найден автоматически."
+    echo "$(_red "✗") squid.conf не найден автоматически."
     printf "  Укажи путь вручную: "; read -r conf
-    [[ -f "$conf" ]] || { echo "✗ Файл не найден: $conf"; return 1; }
+    [[ -f "$conf" ]] || { echo "$(_red "✗") Файл не найден: $conf"; return 1; }
   fi
 
-  echo "  squid : $squid"
-  echo "  conf  : $conf"
+  echo "  squid : $(_green "$squid")"
+  echo "  conf  : $(_green "$conf")"
   echo
 
   # Выбор сетевой службы
@@ -123,26 +127,32 @@ cmd_init() {
     s="${s#\* }"
     s="${s#\*}"
     services+=("$s")
-    echo "  $i) $s"
+    echo "  $(_bold "$i")) $s"
     ((i++))
   done < <(_suggest_services)
   echo "  0) ввести вручную"
 
   local choice service
-  printf "Выбери службу [0-%d]: " "$(( ${#services[@]} ))"
-  read -r choice
+  if (( ${#services[@]} > 0 )); then
+    printf "Выбери службу [0-%d] (Enter = %s): " "$(( ${#services[@]} ))" "$(_bold "1")"
+    read -r choice
+    choice="${choice:-1}"
+  else
+    choice="0"
+  fi
 
-  if [[ "$choice" == "0" || -z "$choice" ]]; then
+  if [[ "$choice" == "0" ]]; then
     printf "Название службы (как в Настройки → Сеть): "
     read -r service
   else
     service="${services[$((choice-1))]:-}"
+    [[ -n "$service" ]] || { echo "$(_red "✗") Неверный номер: $choice"; return 1; }
   fi
-  [[ -n "$service" ]] || { echo "✗ Служба не выбрана."; return 1; }
+  [[ -n "$service" ]] || { echo "$(_red "✗") Служба не выбрана."; return 1; }
 
   # Проверим, что служба существует
   if ! networksetup -getnetworkserviceenabled "$service" >/dev/null 2>&1; then
-    printf '⚠  Служба «%s» не распознана networksetup — проверь название.\n' "$service"
+    printf '%s  Служба «%s» не распознана networksetup — проверь название.\n' "$(_yellow "⚠")" "$service"
   fi
 
   mkdir -p "$CONFIG_DIR"
@@ -152,7 +162,7 @@ SERVICE="$service"
 SQUID="$squid"
 CONF="$conf"
 EOF
-  echo "✓ Конфиг сохранён: $CONFIG_FILE"
+  echo "$(_green "✓") Конфиг сохранён: $CONFIG_FILE"
 }
 
 _load_config() {
