@@ -13,11 +13,23 @@
 #   netswitch           — переключить сеть (toggle)
 #   netswitch status    — показать текущее состояние
 #   netswitch config    — показать сохранённый конфиг
+#   netswitch --version — показать версию
 
 set -euo pipefail
 
+VERSION="0.1.1"
+
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/netswitch"
 CONFIG_FILE="$CONFIG_DIR/config"
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  _C_GREEN=$'\033[32m'; _C_RED=$'\033[31m'; _C_DIM=$'\033[2m'; _C_RESET=$'\033[0m'
+else
+  _C_GREEN=""; _C_RED=""; _C_DIM=""; _C_RESET=""
+fi
+
+_green() { printf '%s%s%s' "$_C_GREEN" "$1" "$_C_RESET"; }
+_red()   { printf '%s%s%s' "$_C_RED" "$1" "$_C_RESET"; }
 
 # ─────────────────────────────────────────────────────────────
 #  Детекторы путей
@@ -159,11 +171,11 @@ _squid_running() {
 cmd_toggle() {
   _load_config
   if [[ "$(networksetup -getnetworkserviceenabled "$SERVICE")" == "Enabled" ]]; then
-    echo "→ Внешняя сеть (squid off, LAN off)"
+    echo "→ $(_red "Внешняя сеть") (squid off, LAN off)"
     "$SQUID" -f "$CONF" -k shutdown 2>/dev/null || true
     sudo networksetup -setnetworkserviceenabled "$SERVICE" off
   else
-    echo "→ Внутренняя сеть (LAN on, squid on)"
+    echo "→ $(_green "Внутренняя сеть") (LAN on, squid on)"
     sudo networksetup -setnetworkserviceenabled "$SERVICE" on
     "$SQUID" -f "$CONF"
   fi
@@ -172,10 +184,16 @@ cmd_toggle() {
 cmd_status() {
   _load_config
   local lan="$(networksetup -getnetworkserviceenabled "$SERVICE" 2>/dev/null || echo '?')"
-  local proxy="остановлен"; _squid_running && proxy="запущен"
+  local lan_c="$lan"
+  [[ "$lan" == "Enabled" ]] && lan_c="$(_green "$lan")"
+  [[ "$lan" == "Disabled" ]] && lan_c="$(_red "$lan")"
+  local proxy proxy_c
+  if _squid_running; then proxy="запущен"; proxy_c="$(_green "$proxy")"
+  else proxy="остановлен"; proxy_c="$(_red "$proxy")"
+  fi
   echo "Служба : $SERVICE"
-  echo "LAN    : $lan"
-  echo "squid  : $proxy"
+  echo "LAN    : $lan_c"
+  echo "squid  : $proxy_c"
 }
 
 cmd_config() {
@@ -194,5 +212,6 @@ case "${1:-toggle}" in
   -h|--help|help)
     awk '/^#!/{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
     ;;
-  *) echo "Неизвестная команда: $1 (init|toggle|status|config)"; exit 1 ;;
+  -v|--version)    echo "netswitch $VERSION" ;;
+  *) echo "Неизвестная команда: $1 (init|toggle|status|config|--version)"; exit 1 ;;
 esac
