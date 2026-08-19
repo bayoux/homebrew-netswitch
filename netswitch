@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+#
+# netswitch — переключение между внутренней и внешней сетью на macOS.
+#   Внутренняя сеть: USB-LAN включён  + squid запущен  (прокси доступен)
+#   Внешняя сеть:    USB-LAN выключен + squid остановлен
+#
+# Пути к squid и squid.conf определяются автоматически при первом запуске
+# (команда `netswitch init`) и кэшируются в конфиг. Имя сетевой службы
+# пользователь подтверждает вручную.
+#
+# Использование:
+#   netswitch init      — найти пути, выбрать сетевую службу, сохранить конфиг
+#   netswitch           — переключить сеть (toggle)
+#   netswitch status    — показать текущее состояние
+#   netswitch config    — показать сохранённый конфиг
+
+set -euo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/netswitch"
+CONFIG_FILE="$CONFIG_DIR/config"
+
+# ─────────────────────────────────────────────────────────────
+#  Детекторы путей
+# ─────────────────────────────────────────────────────────────
+
+# Путь к бинарнику squid.
+_detect_squid() {
+  # 1. уже в PATH
+  if command -v squid >/dev/null 2>&1; then
+    command -v squid
+    return 0
+  fi
+  # 2. известные места установки (SquidMan, Homebrew ARM/Intel, ручная сборка)
+  local p
+  for p in \
+    /usr/local/squid/sbin/squid \
+    /opt/homebrew/opt/squid/sbin/squid \
+    /usr/local/opt/squid/sbin/squid \
+    /opt/homebrew/sbin/squid \
+    /usr/local/sbin/squid; do
+    [[ -x "$p" ]] && { echo "$p"; return 0; }
+  done
+  # 3. путь из запущенного процесса
+  p="$(ps -ax -o args= 2>/dev/null | awk '/[s]quid/{print $1; exit}')"
+  [[ -n "$p" && -x "$p" ]] && { echo "$p"; return 0; }
+  return 1
+}
+
+# Путь к squid.conf.
+_detect_conf() {
+  local c
+  # 1. аргумент -f из запущенного процесса (самый достоверный источник)
+  c="$(ps -ax -o args= 2>/dev/null \
+        | awk '/[s]quid/{for(i=1;i<=NF;i++) if($i=="-f"){print $(i+1); exit}}')"
+  [[ -n "$c" && -f "$c" ]] && { echo "$c"; return 0; }
+  # 2. известные места
+  for c in \
+    "$HOME/Library/Preferences/squid.conf" \
+    /opt/homebrew/etc/squid.conf \
+    /usr/local/etc/squid.conf \
+    /usr/local/squid/etc/squid.conf; do
+    [[ -f "$c" ]] && { echo "$c"; return 0; }
+  done
+  # 3. sysconfdir из вывода `squid -v`
+  local sq sysconf
+  if sq="$(_detect_squid)"; then
+    sysconf="$("$sq" -v 2>/dev/null \
+                | grep -oE "sysconfdir=[^' ]+" | head -1 | cut -d= -f2 || true)"
+    [[ -n "$sysconf" && -f "$sysconf/squid.conf" ]] \
+      && { echo "$sysconf/squid.conf"; return 0; }
+  fi
+  return 1
+}
+
+# Кандидаты на внутреннюю сетевую службу (USB / LAN / Ethernet в названии).
+_suggest_services() {
+  networksetup -listallnetworkservices 2>/dev/null \
+    | grep -v '^An asterisk' \
+    | grep -iE 'usb|lan|ethernet' || true
+}
+
+# ─────────────────────────────────────────────────────────────
+#  Команды
+# ─────────────────────────────────────────────────────────────
+
+cmd_init() {
+  local squid conf
+  echo "Поиск путей…"
+
+  if ! squid="$(_detect_squid)"; then
+    echo "✗ Бинарник squid не найден автоматически."
+    printf "  Укажи путь вручную: "; read -r squid
+    [[ -x "$squid" ]] || { echo "✗ Файл не исполняемый: $squid"; return 1; }
+  fi
+
+  if ! conf="$(_detect_conf)"; then
+    echo "✗ squid.conf не найден автоматически."
+    printf "  Укажи путь вручную: "; read -r conf
+    [[ -f "$conf" ]] || { echo "✗ Файл не найден: $conf"; return 1; }
+  fi
+
+  echo "  squid : $squid"
+  echo "  conf  : $conf"
+  echo
+
+  # Выбор сетевой службы
+  echo "Сетевые службы — кандидаты на внутренний LAN:"
+  local services=() s i=1
+  while IFS= read -r s; do
+    [[ -z "$s" ]] && continue
+    services+=("$s")
+    echo "  $i) $s"
+    ((i++))
+  done < <(_suggest_services)
+  echo "  0) ввести вручную"
+
+  local choice service
+  printf "Выбери службу [0-%d]: " "$(( ${#services[@]} ))"
+  read -r choice
+
+  if [[ "$choice" == "0" || -z "$choice" ]]; then
+    printf "Название службы (как в Настройки → Сеть): "
+    read -r service
+  else
+    service="${services[$((choice-1))]:-}"
+  fi
+  [[ -n "$service" ]] || { echo "✗ Служба не выбрана."; return 1; }
+
+  # Проверим, что служба существует
+  if ! networksetup -getnetworkserviceenabled "$service" >/dev/null 2>&1; then
+    echo "⚠  Служба «$service» не распознана networksetup — проверь название."
+  fi
+
+  mkdir -p "$CONFIG_DIR"
+  cat > "$CONFIG_FILE" <<EOF
+# netswitch config — сгенерирован $(date +%Y-%m-%d)
+SERVICE="$service"
+SQUID="$squid"
+CONF="$conf"
+EOF
+  echo "✓ Конфиг сохранён: $CONFIG_FILE"
+}
+
+_load_config() {
+  [[ -f "$CONFIG_FILE" ]] || {
+    echo "Не настроено. Запусти сначала: netswitch init" >&2
+    exit 1
+  }
+  # shellcheck source=/dev/null
+  source "$CONFIG_FILE"
+}
+
+_squid_running() {
+  pgrep -f "[s]quid" >/dev/null 2>&1
+}
+
+cmd_toggle() {
+  _load_config
+  if [[ "$(networksetup -getnetworkserviceenabled "$SERVICE")" == "Enabled" ]]; then
+    echo "→ Внешняя сеть (squid off, LAN off)"
+    "$SQUID" -f "$CONF" -k shutdown 2>/dev/null || true
+    sudo networksetup -setnetworkserviceenabled "$SERVICE" off
+  else
+    echo "→ Внутренняя сеть (LAN on, squid on)"
+    sudo networksetup -setnetworkserviceenabled "$SERVICE" on
+    "$SQUID" -f "$CONF"
+  fi
+}
+
+cmd_status() {
+  _load_config
+  local lan="$(networksetup -getnetworkserviceenabled "$SERVICE" 2>/dev/null || echo '?')"
+  local proxy="остановлен"; _squid_running && proxy="запущен"
+  echo "Служба : $SERVICE"
+  echo "LAN    : $lan"
+  echo "squid  : $proxy"
+}
+
+cmd_config() {
+  [[ -f "$CONFIG_FILE" ]] && cat "$CONFIG_FILE" || echo "Конфиг не найден. Запусти: netswitch init"
+}
+
+# ─────────────────────────────────────────────────────────────
+#  Диспетчер
+# ─────────────────────────────────────────────────────────────
+
+case "${1:-toggle}" in
+  init)            cmd_init ;;
+  toggle|"")       cmd_toggle ;;
+  status)          cmd_status ;;
+  config)          cmd_config ;;
+  -h|--help|help)
+    awk '/^#!/{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
+    ;;
+  *) echo "Неизвестная команда: $1 (init|toggle|status|config)"; exit 1 ;;
+esac
