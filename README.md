@@ -16,7 +16,8 @@
 ### Через Homebrew (рекомендуется)
 
 ```bash
-brew install bayoux/netswitch/netswitch
+brew tap bayoux/netswitch
+brew install netswitch
 ```
 
 ### Вручную (curl)
